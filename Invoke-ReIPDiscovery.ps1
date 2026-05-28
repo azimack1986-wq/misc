@@ -9,8 +9,7 @@
     and above (PowerShell 4.0 minimum, built-in cmdlets and .NET only —
     no external modules).
 
-    Each check is interactive: 1 = continue, S = skip the next check,
-    R = re-run the current check, Q = quit and jump to summary.
+    All checks run unattended, top to bottom, with no prompts.
 
 .PARAMETER ScopeIPs
     Override auto-detected scope IPs. Use for clustered IPs / VIPs that
@@ -50,7 +49,6 @@ $Script:Results    = New-Object System.Collections.Generic.List[object]
 $Script:HostName   = $env:COMPUTERNAME
 $Script:OutputDir  = $null
 $Script:ScopeIPs   = @()
-$Script:SkipNext   = $false
 
 # =============================================================================
 # Helpers
@@ -1020,21 +1018,6 @@ function Invoke-Check13LoadBalancer {
 }
 
 # =============================================================================
-# Interaction
-# =============================================================================
-
-function Read-LoopChoice {
-    param([string]$Prompt)
-    while ($true) {
-        $key = Read-Host $Prompt
-        if ($null -eq $key) { return 'Q' }
-        $k = $key.Trim().ToUpper()
-        if ($k -eq '' -or $k -eq '1') { return '1' }
-        if ($k -eq 'S' -or $k -eq 'R' -or $k -eq 'Q') { return $k }
-    }
-}
-
-# =============================================================================
 # Main
 # =============================================================================
 
@@ -1078,14 +1061,9 @@ if ($Script:ScopeIPs.Count -eq 0) {
 Write-Host ''
 Write-Host (' Evidence folder: {0}' -f $Script:OutputDir) -ForegroundColor DarkCyan
 Write-Host ''
-Write-Host ' If incorrect, exit now (Q) and re-run with -ScopeIPs override.' -ForegroundColor Yellow
+Write-Host ' If scope IPs are incorrect, re-run with the -ScopeIPs override.' -ForegroundColor Yellow
+Write-Host ' Running all checks...' -ForegroundColor Cyan
 Write-Host ''
-
-$start = Read-LoopChoice -Prompt ' Press 1 to begin, Q to quit'
-if ($start -ne '1') {
-    Write-Host 'Aborted by user.' -ForegroundColor Yellow
-    exit 0
-}
 
 # Check registry — function objects keyed by number
 $checks = @(
@@ -1110,25 +1088,8 @@ $checkNames = @{
     9='ODBC DSNs'; 10='Inter-App'; 11='SMB / UNC'; 12='Firewall'; 13='Load Balancer'
 }
 
-$quit = $false
-$i = 0
-while ($i -lt $checks.Count) {
-    $entry = $checks[$i]
+foreach ($entry in $checks) {
     $num = $entry.Num
-
-    if ($Script:SkipNext) {
-        $Script:SkipNext = $false
-        $skip = New-CheckResult -Number $num -Name $checkNames[$num] -Status 'N/A' -Findings @()
-        $skip | Add-Member -NotePropertyName Reason -NotePropertyValue 'Skipped by operator' -Force
-        $skip.EvidencePath = Save-Evidence -Number $num -Name $checkNames[$num] -Result ([PSCustomObject]@{ Status='N/A'; Reason='Skipped by operator' })
-        Write-CheckHeader $num $checkNames[$num]
-        Write-Info 'Skipped by operator.'
-        Write-StatusLine 'N/A'
-        $Script:Results.Add($skip) | Out-Null
-        $i++
-        continue
-    }
-
     try {
         $res = & $entry.Fn
     } catch {
@@ -1138,34 +1099,7 @@ while ($i -lt $checks.Count) {
         Write-WarnLine ("Check {0} threw: {1}" -f $num, $_.Exception.Message)
         Write-StatusLine 'ISSUE FOUND'
     }
-
     $Script:Results.Add($res) | Out-Null
-
-    if ($i -eq ($checks.Count - 1)) { break }
-
-    Start-Sleep -Seconds 2
-    Write-Host ''
-    $choice = Read-LoopChoice -Prompt ' Press 1 to continue, S to skip next, R to re-run this check, Q to quit'
-    switch ($choice) {
-        '1' { $i++ }
-        'S' { $Script:SkipNext = $true; $i++ }
-        'R' { $Script:Results.RemoveAt($Script:Results.Count - 1) | Out-Null }
-        'Q' { $quit = $true; break }
-    }
-    if ($quit) { break }
-}
-
-# Mark any unrun checks
-for ($n = ($Script:Results.Count + 1); $n -le 13; $n++) {
-    # Note: $Script:Results may not be in strict numeric order after skip — be defensive
-}
-$haveNums = @($Script:Results | ForEach-Object { $_.CheckNumber })
-foreach ($entry in $checks) {
-    if ($haveNums -notcontains $entry.Num) {
-        $nr = New-CheckResult -Number $entry.Num -Name $checkNames[$entry.Num] -Status 'Not Run' -Findings @()
-        $nr.EvidencePath = ''
-        $Script:Results.Add($nr) | Out-Null
-    }
 }
 
 # =============================================================================
